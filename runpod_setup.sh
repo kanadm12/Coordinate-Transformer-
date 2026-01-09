@@ -24,7 +24,7 @@ mkdir -p logs
 echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install numpy scipy tqdm pillow matplotlib tensorboard
+pip install numpy scipy tqdm pillow matplotlib tensorboard nibabel
 
 # Check GPU availability
 echo "Checking GPU availability..."

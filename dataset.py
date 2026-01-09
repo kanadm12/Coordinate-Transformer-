@@ -8,6 +8,8 @@ import numpy as np
 from torch.utils.data import Dataset
 from pathlib import Path
 import json
+import nibabel as nib
+from PIL import Image
 
 
 class PatientDRRDataset(Dataset):
@@ -16,12 +18,11 @@ class PatientDRRDataset(Dataset):
     
     Expected data structure:
     dataset_path/
-        patient_001/
-            ct_volume.npy  # Shape: [D, H, W] or [C, D, H, W]
-            xray_0.npy     # Shape: [H, W] or [C, H, W]
-            xray_1.npy
-            metadata.json  # Optional: projection parameters
-        patient_002/
+        patient_id_1/
+            patient_id_1.nii.gz          # CT volume in NIfTI format
+            patient_id_1_pa_drr.png      # PA (frontal) view DRR
+            patient_id_1_lat_drr.png     # Lateral view DRR
+        patient_id_2/
             ...
     """
     
@@ -43,7 +44,7 @@ class PatientDRRDataset(Dataset):
         if self.data_path.exists():
             self.patient_dirs = sorted([
                 d for d in self.data_path.iterdir() 
-                if d.is_dir() and d.name.startswith('patient_')
+                if d.is_dir()
             ])
         
         if max_patients is not None:
@@ -68,11 +69,17 @@ class PatientDRRDataset(Dataset):
             return self._get_dummy_item(idx)
         
         patient_dir = self.patient_dirs[idx]
+        patient_id = patient_dir.name
         
         try:
-            # Load CT volume
-            ct_path = patient_dir / "ct_volume.npy"
-            ct_volume = np.load(ct_path).astype(np.float32)
+            # Find NIfTI file (CT volume)
+            nii_files = list(patient_dir.glob("*.nii.gz")) + list(patient_dir.glob("*.nii"))
+            if len(nii_files) == 0:
+                raise FileNotFoundError(f"No NIfTI file found in {patient_dir}")
+            
+            ct_path = nii_files[0]
+            nii_img = nib.load(str(ct_path))
+            ct_volume = nii_img.get_fdata().astype(np.float32)
             
             # Normalize to [-1, 1]
             ct_volume = self._normalize_volume(ct_volume)
@@ -80,34 +87,38 @@ class PatientDRRDataset(Dataset):
             # Resize if needed
             ct_volume = self._resize_volume(ct_volume, self.target_volume_size)
             
-            # Load X-ray images (typically 2 views)
-            xray_files = sorted(patient_dir.glob("xray_*.npy"))
+            # Load DRR X-ray PNG images (PA and lateral views)
             xrays = []
-            for xray_file in xray_files:
-                xray = np.load(xray_file).astype(np.float32)
-                xray = self._normalize_image(xray)
-                
-                # Ensure shape is [C, H, W]
-                if xray.ndim == 2:
-                    xray = xray[np.newaxis, ...]  # Add channel dimension
-                
-                xrays.append(xray)
+            
+            # Look for PA (frontal) view
+            pa_files = list(patient_dir.glob("*_pa_drr.png"))
+            if len(pa_files) > 0:
+                pa_img = Image.open(pa_files[0]).convert('L')  # Convert to grayscale
+                pa_array = np.array(pa_img).astype(np.float32)
+                pa_array = self._normalize_image(pa_array)
+                pa_array = pa_array[np.newaxis, ...]  # Add channel dimension [1, H, W]
+                xrays.append(pa_array)
+            
+            # Look for lateral view
+            lat_files = list(patient_dir.glob("*_lat_drr.png"))
+            if len(lat_files) > 0:
+                lat_img = Image.open(lat_files[0]).convert('L')
+                lat_array = np.array(lat_img).astype(np.float32)
+                lat_array = self._normalize_image(lat_array)
+                lat_array = lat_array[np.newaxis, ...]  # Add channel dimension [1, H, W]
+                xrays.append(lat_array)
+            
+            if len(xrays) == 0:
+                raise FileNotFoundError(f"No DRR images found in {patient_dir}")
             
             # Stack X-rays: [num_views, C, H, W]
             xrays = np.stack(xrays, axis=0)
             
-            # Load metadata if available
-            metadata_path = patient_dir / "metadata.json"
-            metadata = {}
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-            
             return {
                 'volume': torch.from_numpy(ct_volume),  # [D, H, W]
                 'xrays': torch.from_numpy(xrays),        # [num_views, C, H, W]
-                'patient_id': patient_dir.name,
-                'metadata': metadata
+                'patient_id': patient_id,
+                'metadata': {}
             }
             
         except Exception as e:
