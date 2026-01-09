@@ -85,8 +85,8 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, rank, e
     
     for batch_idx, batch_data in enumerate(pbar):
         if isinstance(batch_data, dict):
-            volumes = batch_data['ct_volume'].to(device)
-            xrays = batch_data['drr_stacked'].to(device)
+            volumes = batch_data['volume'].to(device)
+            xrays = batch_data['xrays'].to(device)
         else:
             volumes, xrays = batch_data
             volumes = volumes.to(device)
@@ -138,8 +138,8 @@ def validate(model, val_loader, loss_fn, device, rank):
     with torch.no_grad():
         for batch_data in val_loader:
             if isinstance(batch_data, dict):
-                volumes = batch_data['ct_volume'].to(device)
-                xrays = batch_data['drr_stacked'].to(device)
+                volumes = batch_data['volume'].to(device)
+                xrays = batch_data['xrays'].to(device)
             else:
                 volumes, xrays = batch_data
                 volumes = volumes.to(device)
