@@ -179,15 +179,18 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
 def main_worker(rank, world_size, config):
     """Main training function for each GPU"""
     
-    setup_ddp(rank, world_size)
+    # Setup DDP only if using multiple GPUs
+    if world_size > 1:
+        setup_ddp(rank, world_size)
+    
     device = torch.device(f'cuda:{rank}')
     
     if rank == 0:
         print("=" * 80)
-        print("COORDINATE-BASED TRANSFORMER CT RECONSTRUCTION - 4 GPU DDP")
+        print("COORDINATE-BASED TRANSFORMER CT RECONSTRUCTION")
         print("Revolutionary Set-Based Architecture with Cross-Attention")
         print("=" * 80)
-        print(f"Training on {world_size} GPUs")
+        print(f"Training on {world_size} GPU(s)")
         print(f"Volume size: {config['model']['volume_size']}")
         print(f"Batch size per GPU: {config['training']['batch_size']}")
         print(f"Effective batch size: {config['training']['batch_size'] * world_size}")
@@ -208,7 +211,9 @@ def main_worker(rank, world_size, config):
         dropout=config['model']['dropout']
     ).to(device)
     
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+    # Wrap with DDP only if using multiple GPUs
+    if world_size > 1:
+        model = DDP(model, device_ids=[rank], find_unused_parameters=False)
     
     # Create loss
     loss_fn = CoordinateTransformerLoss(
@@ -249,26 +254,31 @@ def main_worker(rank, world_size, config):
         print(f"  Train: {len(train_dataset)} patients")
         print(f"  Val: {len(val_dataset)} patients")
     
-    # Create distributed samplers
-    train_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True
-    )
-    
-    val_sampler = DistributedSampler(
-        val_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=False
-    )
+    # Create distributed samplers only for multi-GPU training
+    if world_size > 1:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        )
+        
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False
+        )
+    else:
+        train_sampler = None
+        val_sampler = None
     
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         sampler=train_sampler,
+        shuffle=(train_sampler is None),
         num_workers=config['data']['num_workers'],
         pin_memory=True
     )
@@ -277,6 +287,7 @@ def main_worker(rank, world_size, config):
         val_dataset,
         batch_size=config['training']['batch_size'],
         sampler=val_sampler,
+        shuffle=False,
         num_workers=config['data']['num_workers'],
         pin_memory=True
     )
@@ -298,7 +309,8 @@ def main_worker(rank, world_size, config):
     best_val_loss = float('inf')
     
     for epoch in range(1, config['training']['num_epochs'] + 1):
-        train_sampler.set_epoch(epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         
         # Train
         train_metrics = train_epoch(
@@ -320,7 +332,7 @@ def main_worker(rank, world_size, config):
                 checkpoint_path = checkpoint_dir / f"coord_transformer_epoch_{epoch}.pt"
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': model.module.state_dict(),
+                    'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'train_metrics': train_metrics,
                     'val_metrics': val_metrics,
@@ -334,7 +346,7 @@ def main_worker(rank, world_size, config):
                 best_path = checkpoint_dir / "coord_transformer_best.pt"
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': model.module.state_dict(),
+                    'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'train_metrics': train_metrics,
                     'val_metrics': val_metrics,
@@ -342,13 +354,17 @@ def main_worker(rank, world_size, config):
                 }, best_path)
                 print(f"  ★ New best model saved! Val Loss: {best_val_loss:.4f}")
     
-    cleanup_ddp()
+    # Cleanup DDP only if used
+    if world_size > 1:
+        cleanup_ddp()
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train Coordinate-Based Transformer')
     parser.add_argument('--config', type=str, default='coord_transformer/config_coord_transformer.json',
                        help='Path to config file')
+    parser.add_argument('--num_gpus', type=int, default=None,
+                       help='Number of GPUs to use (default: all available)')
     args = parser.parse_args()
     
     # Load config
@@ -356,19 +372,27 @@ def main():
         config = json.load(f)
     
     # Get number of GPUs
-    world_size = torch.cuda.device_count()
+    available_gpus = torch.cuda.device_count()
+    world_size = args.num_gpus if args.num_gpus is not None else available_gpus
     
-    if world_size < 4:
-        print(f"Warning: Found {world_size} GPUs, expected 4")
-        print("Training will proceed with available GPUs")
+    if world_size > available_gpus:
+        print(f"Warning: Requested {world_size} GPUs, but only {available_gpus} available")
+        world_size = available_gpus
+    
+    print(f"Training with {world_size} GPU(s)")
     
     # Launch training
-    torch.multiprocessing.spawn(
-        main_worker,
-        args=(world_size, config),
-        nprocs=world_size,
-        join=True
-    )
+    if world_size == 1:
+        # Single GPU training without DDP
+        main_worker(0, world_size, config)
+    else:
+        # Multi-GPU training with DDP
+        torch.multiprocessing.spawn(
+            main_worker,
+            args=(world_size, config),
+            nprocs=world_size,
+            join=True
+        )
 
 
 if __name__ == "__main__":
