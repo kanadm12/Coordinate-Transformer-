@@ -12,11 +12,9 @@ from pathlib import Path
 import sys
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from coord_transformer.model_coord_transformer import CoordinateTransformer
-from utils.dataset import PatientDRRDataset
+# Import from current directory (standalone repo)
+from model_coord_transformer import CoordinateTransformer
+from dataset import PatientDRRDataset
 
 
 def normalize_volume(volume):

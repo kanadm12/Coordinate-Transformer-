@@ -20,11 +20,9 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from coord_transformer.model_coord_transformer import CoordinateTransformer, CoordinateTransformerLoss
-from utils.dataset import PatientDRRDataset
+# Import from current directory (standalone repo)
+from model_coord_transformer import CoordinateTransformer, CoordinateTransformerLoss
+from dataset import PatientDRRDataset
 
 
 def setup_ddp(rank, world_size):
